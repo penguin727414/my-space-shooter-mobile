@@ -1,0 +1,719 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Space Shooter (Mobile 版)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: black;
+      overflow: hidden;
+      touch-action: none; /* 防止触摸滚动 */
+    }
+    #gameCanvas {
+      display: block;
+      margin: 0 auto;
+      background: #000;
+      touch-action: none;
+    }
+    #upgradeOverlay {
+      position: absolute;
+      top: 0; left: 0;
+      width: 100%; height: 100%;
+      background: rgba(0, 0, 0, 0.8);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 10;
+    }
+    #upgradeBox {
+      background: #222;
+      color: #fff;
+      padding: 20px;
+      border-radius: 8px;
+      text-align: center;
+      font-family: Arial, sans-serif;
+      max-width: 90%;
+    }
+    #upgradeBox button {
+      margin: 8px;
+      padding: 10px 16px;
+      font-size: 16px;
+      cursor: pointer;
+      border: none;
+      border-radius: 6px;
+      background: #444;
+      color: white;
+    }
+    #upgradeBox button:hover {
+      background: #666;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="gameCanvas" width="400" height="800"></canvas>
+
+  <!-- 升级界面 Overlay -->
+  <div id="upgradeOverlay">
+    <div id="upgradeBox">
+      <h2>选择提升的项目</h2>
+      <div id="upgradeOptions"></div>
+    </div>
+  </div>
+
+  <script>
+  (async () => {
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+
+    // -------------------------------------------------
+    // —— 载入资源 —— 图像 & 音效
+    // -------------------------------------------------
+    const images = {};
+    const sounds = {};
+
+    function loadImage(key, src) {
+      return new Promise(resolve => {
+        const img = new Image();
+        img.src = src;
+        img.onload = () => { images[key] = img; resolve(); };
+      });
+    }
+
+    function loadSound(key, src) {
+      return new Promise(resolve => {
+        const audio = new Audio(src);
+        audio.volume = 0.5;
+        sounds[key] = audio;
+        // 不一定马上传完，但先 store
+        resolve();
+      });
+    }
+
+    // 请确保下列文件路径与实际存放位置一致
+    const loadPromises = [
+      loadImage('player',   './ufo.png'),
+      loadImage('enemy',    './enemy.png'),
+      loadImage('background','./background.png'),
+      loadImage('laser',    './laser.png'),
+      loadImage('fireball','./fireball.png'),
+      loadSound('bgm',      './8hp8q-bq1d0.wav'),
+      loadSound('shoot',    './xf9c1-23hih.wav'),
+      loadSound('explosion','./explosion.wav'),
+    ];
+    await Promise.all(loadPromises);
+
+    // -------------------------------------------------
+    // —— 基础类定义 —— 
+    // -------------------------------------------------
+    class Rectangle {
+      constructor(x, y, w, h) {
+        this.x = x; this.y = y; this.w = w; this.h = h;
+      }
+      intersects(other) {
+        return !(
+          other.x > this.x + this.w ||
+          other.x + other.w < this.x ||
+          other.y > this.y + this.h ||
+          other.y + other.h < this.y
+        );
+      }
+    }
+
+    class Enemy {
+      constructor(x, y, hp, atk, def) {
+        this.rect    = new Rectangle(x, y, 40, 30);
+        this.health  = hp;
+        this.attack  = atk;
+        this.defense = def;
+        this.dirX = Math.random() < 0.5 ? 1 : -1;
+        this.dirY = Math.random() < 0.5 ? 1 : -1;
+      }
+    }
+
+    class Bullet {
+      constructor(x, y, vx, vy) {
+        this.x = x; this.y = y; this.vx = vx; this.vy = vy;
+      }
+      update() { this.x += this.vx; this.y += this.vy; }
+      getRect() { return new Rectangle(this.x, this.y, 5, 10); }
+    }
+
+    class Fireball {
+      constructor(x, y, vx, vy) {
+        this.x = x; this.y = y; this.vx = vx; this.vy = vy;
+      }
+      update() { this.x += this.vx; this.y += this.vy; }
+      getRect() { return new Rectangle(this.x, this.y, 16, 16); }
+    }
+
+    class EnemyBullet {
+      constructor(x, y, vx, vy) {
+        this.x = x; this.y = y; this.vx = vx; this.vy = vy;
+      }
+      update() { this.x += this.vx; this.y += this.vy; }
+      getRect() { return new Rectangle(this.x, this.y, 5, 10); }
+    }
+
+    class DamageText {
+      constructor(text, x, y) {
+        this.text = text; this.x = x; this.y = y; this.life = 60;
+      }
+    }
+
+    // -------------------------------------------------
+    // —— 全局变量 —— （游戏状态）
+    // -------------------------------------------------
+    let playerX = canvas.width / 2 - 25;
+    let playerY = canvas.height - 30 - 10;
+    const PLAYER_WIDTH  = 50;
+    const PLAYER_HEIGHT = 30;
+    let playerMaxHealth = 200;  // 初始生命 200
+    let playerHealth    = playerMaxHealth;
+    let playerAttack    = 26;   // 初始攻击 26
+    let playerDefense   = 10;   // 初始防御 10
+    let playerAttackSpeed = 1.0; // 射速（每秒发射次数）
+    let lastAutoFireTime = 0;    // 自动发射子弹的计时
+    let lastFireballTime= 0;     // 火球冷却计时
+    const BASE_FIREBALL_COOLDOWN = 10000; // 10 秒
+
+    // 技能等级
+    let multiShotLevel    = 0;
+    let chainAttackLevel  = 0;
+    let fireballSkillLevel= 0;
+    let diagonalShotLevel = 0;
+    let deathChainLevel   = 0;
+
+    // 经验 & 升级
+    let playerLevel = 1;
+    let playerXP    = 0;
+    let xpToNext    = 100;
+    let leveling    = false;
+    let pauseStartTime    = 0;
+    let pausedRemainingCd = 0;
+
+    // 触屏移动状态
+    let touchX = null, touchY = null;
+
+    // 敌人、子弹、火球、敌人子弹、伤害文字
+    const enemies      = [];
+    const bullets      = [];
+    const fireballs    = [];
+    const enemyBullets = [];
+    const damageTexts  = [];
+    const random       = Math.random;
+
+    // -------------------------------------------------
+    // —— 触屏移动 —— 
+    //    用手指按住画布即可控制玩家位置
+    // -------------------------------------------------
+    canvas.addEventListener('touchstart', e => {
+      e.preventDefault();
+      const t = e.touches[0];
+      const rect = canvas.getBoundingClientRect();
+      touchX = (t.clientX - rect.left) * (canvas.width / rect.width);
+      touchY = (t.clientY - rect.top)  * (canvas.height / rect.height);
+    });
+    canvas.addEventListener('touchmove', e => {
+      e.preventDefault();
+      const t = e.touches[0];
+      const rect = canvas.getBoundingClientRect();
+      touchX = (t.clientX - rect.left) * (canvas.width / rect.width);
+      touchY = (t.clientY - rect.top)  * (canvas.height / rect.height);
+    });
+    canvas.addEventListener('touchend', e => {
+      e.preventDefault();
+      touchX = touchY = null;
+    });
+
+    // -------------------------------------------------
+    // —— 显示升级界面 —— HTML Overlay + 按钮 
+    // -------------------------------------------------
+    const upgradeOverlay = document.getElementById('upgradeOverlay');
+    const upgradeOptions = document.getElementById('upgradeOptions');
+
+    function showUpgradeDialog() {
+      // 1) 计算并冻结剩余冷却
+      const now = performance.now();
+      const fbCd = Math.max(10000, BASE_FIREBALL_COOLDOWN - fireballSkillLevel * 1000);
+      pausedRemainingCd = Math.max(0, fbCd - (now - lastFireballTime));
+      pauseStartTime = now;
+
+      // 2) 准备选项
+      const opts = [];
+      if (playerLevel % 5 === 0) {
+        if (multiShotLevel     < 3) opts.push('MULTI_SHOT');
+        if (chainAttackLevel   < 3) opts.push('CHAIN_ATTACK');
+        if (fireballSkillLevel < 3) opts.push('FIREBALL');
+        if (diagonalShotLevel  < 3) opts.push('DIAGONAL_SHOT');
+        if (deathChainLevel    < 3) opts.push('DEATH_CHAIN');
+      }
+      if (opts.length < 3) {
+        const base = ['Max Health','Attack','Attack Speed','Defense'];
+        base.sort(() => 0.5 - Math.random());
+        opts.push(...base.slice(0, 3));
+      }
+      opts.sort(() => 0.5 - Math.random());
+
+      // 清空旧按钮
+      upgradeOptions.innerHTML = '';
+      opts.slice(0, 3).forEach(opt => {
+        const btn = document.createElement('button');
+        btn.textContent = opt;
+        btn.onclick = () => {
+          switch(opt) {
+            case 'Max Health':
+              playerMaxHealth += 40; // 每次 +40
+              playerHealth = Math.min(playerHealth + 40, playerMaxHealth);
+              break;
+            case 'Attack':
+              playerAttack += 0;   // 该项在手机版改为自动攻击，不需要手动加攻击量
+              break;
+            case 'Attack Speed':
+              playerAttackSpeed *= 1.2;
+              break;
+            case 'Defense':
+              playerDefense += 10; // 每次 +10
+              break;
+            case 'MULTI_SHOT':
+              multiShotLevel++;
+              break;
+            case 'CHAIN_ATTACK':
+              chainAttackLevel++;
+              break;
+            case 'FIREBALL':
+              fireballSkillLevel++;
+              break;
+            case 'DIAGONAL_SHOT':
+              diagonalShotLevel++;
+              break;
+            case 'DEATH_CHAIN':
+              deathChainLevel++;
+              break;
+          }
+          // 关闭 Overlay，并补偿冷却
+          upgradeOverlay.style.display = 'none';
+          leveling = false;
+          const paused = performance.now() - pauseStartTime;
+          lastFireballTime += paused;
+          // 触摸时可能不再按下，关掉滑动状态
+          touchX = touchY = null;
+        };
+        upgradeOptions.appendChild(btn);
+      });
+
+      // 3) 显示 Overlay
+      upgradeOverlay.style.display = 'flex';
+    }
+
+    // -------------------------------------------------
+    // —— 核心游戏循环 —— 更新 & 渲染 
+    // -------------------------------------------------
+    let lastFrameTime = 0;
+    function gameLoop(timestamp) {
+      const delta = timestamp - lastFrameTime;
+      lastFrameTime = timestamp;
+      updateGame(delta);
+      renderGame();
+      requestAnimationFrame(gameLoop);
+    }
+
+    function updateGame(delta) {
+      if (leveling) return;
+
+      // 1) 玩家跟随手指移动
+      if (touchX !== null && touchY !== null) {
+        // 玩家中心跟随 touchX、touchY
+        playerX = touchX - PLAYER_WIDTH / 2;
+        playerY = touchY - PLAYER_HEIGHT / 2;
+        // 边界限制
+        playerX = Math.max(0, Math.min(playerX, canvas.width - PLAYER_WIDTH));
+        playerY = Math.max(0, Math.min(playerY, canvas.height - PLAYER_HEIGHT));
+      }
+
+      const now = performance.now();
+
+      // 2) 自动射击子弹（多重 + 斜射）
+      if (now - lastAutoFireTime >= 1000 / playerAttackSpeed) {
+        sounds['shoot']?.cloneNode().play();
+        const shots = 1 + multiShotLevel;
+        const baseX = playerX + PLAYER_WIDTH / 2 - 2.5;
+        const baseY = playerY;
+        for (let i = 0; i < shots; i++) {
+          bullets.push(new Bullet(baseX, baseY, 0, -10));
+          for (let k = 1; k <= diagonalShotLevel; k++) {
+            bullets.push(new Bullet(baseX, baseY, -k * 1.0, -10));
+            bullets.push(new Bullet(baseX, baseY,  k * 1.0, -10));
+          }
+        }
+        lastAutoFireTime = now;
+      }
+
+      // 更新子弹
+      for (let i = bullets.length - 1; i >= 0; i--) {
+        bullets[i].update();
+        if (
+          bullets[i].y < 0 ||
+          bullets[i].x < 0 ||
+          bullets[i].x > canvas.width
+        ) {
+          bullets.splice(i, 1);
+        }
+      }
+
+      // 3) 自动发射火球（无按键，只要冷却结束就发）
+      const fbCd = Math.max(10000, BASE_FIREBALL_COOLDOWN - fireballSkillLevel * 1000);
+      if (
+        fireballSkillLevel > 0 &&
+        now - lastFireballTime >= fbCd
+      ) {
+        fireballs.push(new Fireball(
+          playerX + PLAYER_WIDTH / 2 - 8,
+          playerY,
+          0, -8
+        ));
+        lastFireballTime = now;
+      }
+
+      // 更新火球
+      for (let i = fireballs.length - 1; i >= 0; i--) {
+        fireballs[i].update();
+        if (fireballs[i].y < 0) {
+          fireballs.splice(i, 1);
+        }
+      }
+
+      // 4) 敌人生成
+      if (Math.random() < 1 / 80) {
+        enemies.push(new Enemy(
+          Math.random() * (canvas.width - 40),
+          -30,
+          50, 15, 5
+        ));
+      }
+
+      // 5) 敌人移动 & 攻击
+      const midY = canvas.height / 2;
+      const rng  = 30;
+      enemies.forEach(e => {
+        if (e.rect.y < midY - rng) {
+          e.rect.y += 3;
+        } else {
+          if (Math.random() < 1 / 30) e.dirX = Math.random() < 0.5 ? 1 : -1;
+          if (Math.random() < 1 / 30) e.dirY = Math.random() < 0.5 ? 1 : -1;
+          e.rect.x = Math.max(0, Math.min(e.rect.x + e.dirX * 2, canvas.width - e.rect.w));
+          e.rect.y = Math.max(midY - rng, Math.min(e.rect.y + e.dirY * 2, midY + rng));
+          if (Math.random() < 1 / 150) {
+            const sx = e.rect.x + e.rect.w / 2;
+            const sy = e.rect.y + e.rect.h;
+            const dx = (playerX + PLAYER_WIDTH / 2) - sx;
+            const dy = (playerY + PLAYER_HEIGHT / 2) - sy;
+            const dist = Math.hypot(dx, dy);
+            const spd = 5;
+            enemyBullets.push(new EnemyBullet(
+              sx, sy, dx / dist * spd, dy / dist * spd
+            ));
+          }
+        }
+      });
+      for (let i = enemyBullets.length - 1; i >= 0; i--) {
+        enemyBullets[i].update();
+        if (
+          enemyBullets[i].y > canvas.height ||
+          enemyBullets[i].x < 0 ||
+          enemyBullets[i].x > canvas.width
+        ) {
+          enemyBullets.splice(i, 1);
+        }
+      }
+
+      // 6) 子弹击中敌人 + Chain Attack + Death Chain
+      for (let bi = bullets.length - 1; bi >= 0; bi--) {
+        const b = bullets[bi];
+        let removedBullet = false;
+        for (const e of Array.from(enemies)) {
+          if (b.getRect().intersects(e.rect)) {
+            bullets.splice(bi, 1);
+            removedBullet = true;
+
+            // 6.1) 伤害与回血
+            const raw = playerAttack;
+            const actual = raw * (100 / (100 + e.defense));
+            const dmg = Math.floor(actual);
+            if (dmg > 0) {
+              e.health -= dmg;
+              damageTexts.push(new DamageText('-' + dmg, e.rect.x + e.rect.w / 2, e.rect.y));
+              const heal = Math.round(actual * 0.1);
+              playerHealth = Math.min(playerHealth + heal, playerMaxHealth);
+              if (heal > 0) {
+                damageTexts.push(new DamageText('+' + heal, playerX + PLAYER_WIDTH / 2, playerY));
+              }
+            }
+
+            // 6.2) Chain Attack （单次弹射）
+            if (chainAttackLevel > 0 && dmg > 0) {
+              const snap = Array.from(enemies);
+              const srcX = e.rect.x + e.rect.w / 2;
+              const srcY = e.rect.y + e.rect.h / 2;
+              let closest = null, minD = Infinity;
+              for (const o of snap) {
+                if (o !== e) {
+                  const dx = (o.rect.x + o.rect.w / 2) - srcX;
+                  const dy = (o.rect.y + o.rect.h / 2) - srcY;
+                  const dd = Math.hypot(dx, dy);
+                  if (dd < minD) { minD = dd; closest = o; }
+                }
+              }
+              if (closest) {
+                const rawB = playerAttack * chainAttackLevel;
+                const actB = rawB * (100 / (100 + closest.defense));
+                const bDmg = Math.floor(actB);
+                if (bDmg > 0) {
+                  closest.health -= bDmg;
+                  damageTexts.push(new DamageText(
+                    '*' + bDmg,
+                    closest.rect.x + closest.rect.w / 2,
+                    closest.rect.y
+                  ));
+                  if (closest.health <= 0) {
+                    enemies.splice(enemies.indexOf(closest), 1);
+                    playerXP += 50;
+                  }
+                }
+              }
+            }
+
+            // 6.3) Death Chain （无限连锁）
+            if (e.health <= 0) {
+              enemies.splice(enemies.indexOf(e), 1);
+              playerXP += 50;
+              if (deathChainLevel > 0) {
+                const snap2 = Array.from(enemies);
+                const queue = [{ x: e.rect.x + e.rect.w / 2, y: e.rect.y + e.rect.h / 2 }];
+                const radius = 100;
+                while (queue.length) {
+                  const center = queue.shift();
+                  let c2 = null, md2 = Infinity;
+                  for (const o2 of snap2) {
+                    const dx2 = (o2.rect.x + o2.rect.w / 2) - center.x;
+                    const dy2 = (o2.rect.y + o2.rect.h / 2) - center.y;
+                    const dd2 = Math.hypot(dx2, dy2);
+                    if (dd2 > 0 && dd2 <= radius && dd2 < md2) {
+                      md2 = dd2; c2 = o2;
+                    }
+                  }
+                  if (!c2) break;
+                  const rawC = playerAttack * deathChainLevel;
+                  const actC = rawC * (100 / (100 + c2.defense));
+                  const dD = Math.floor(actC);
+                  if (dD > 0) {
+                    c2.health -= dD;
+                    damageTexts.push(new DamageText(
+                      '#' + dD,
+                      c2.rect.x + c2.rect.w / 2,
+                      c2.rect.y
+                    ));
+                    if (c2.health <= 0) {
+                      enemies.splice(enemies.indexOf(c2), 1);
+                      snap2.splice(snap2.indexOf(c2), 1);
+                      playerXP += 50;
+                      queue.push({
+                        x: c2.rect.x + c2.rect.w / 2,
+                        y: c2.rect.y + c2.rect.h / 2
+                      });
+                    }
+                  }
+                }
+              }
+            }
+
+            break;  // 跳出敌人碰撞检测
+          }
+        }
+        if (removedBullet) continue;
+      }
+
+      // 7) 火球爆炸范围伤害
+      for (let i = fireballs.length - 1; i >= 0; i--) {
+        const f = fireballs[i];
+        let exploded = false;
+        for (const e of Array.from(enemies)) {
+          if (f.getRect().intersects(e.rect)) {
+            sounds['explosion']?.cloneNode().play();
+            fireballs.splice(i, 1);
+            exploded = true;
+            const radius = 50 + 20 * fireballSkillLevel;
+            const epicX = f.x + 8, epicY = f.y + 8;
+            const eRaw = playerAttack * 0.8 * fireballSkillLevel;
+            for (const a of Array.from(enemies)) {
+              const dx = (a.rect.x + a.rect.w / 2) - epicX;
+              const dy = (a.rect.y + a.rect.h / 2) - epicY;
+              if (Math.hypot(dx, dy) <= radius) {
+                const aAct = eRaw * (100 / (100 + a.defense));
+                const aDmg = Math.floor(aAct);
+                if (aDmg > 0) {
+                  a.health -= aDmg;
+                  damageTexts.push(new DamageText(
+                    '🔥' + aDmg,
+                    a.rect.x + a.rect.w / 2,
+                    a.rect.y
+                  ));
+                  if (a.health <= 0) {
+                    enemies.splice(enemies.indexOf(a), 1);
+                    playerXP += 50;
+                  }
+                }
+              }
+            }
+            break;
+          }
+        }
+        if (exploded) continue;
+      }
+
+      // 8) 敌人子弹打到玩家
+      const playerRect = new Rectangle(playerX + 10, playerY + 5, 30, 20);
+      for (let i = enemyBullets.length - 1; i >= 0; i--) {
+        const eb = enemyBullets[i];
+        eb.update();
+        if (eb.getRect().intersects(playerRect)) {
+          enemyBullets.splice(i, 1);
+          const rawD = 15 * (100 / (100 + playerDefense));
+          const dInt = Math.floor(rawD);
+          if (dInt > 0) {
+            playerHealth = Math.max(playerHealth - dInt, 0);
+            damageTexts.push(new DamageText(
+              '-' + dInt,
+              playerX + PLAYER_WIDTH / 2,
+              playerY
+            ));
+            if (playerHealth <= 0) {
+              alert('Game Over');
+              window.location.reload();
+            }
+          }
+        }
+      }
+
+      // 9) 更新伤害文字生命
+      for (let i = damageTexts.length - 1; i >= 0; i--) {
+        const dt = damageTexts[i];
+        dt.y -= 1;
+        dt.life -= 1;
+        if (dt.life <= 0) damageTexts.splice(i, 1);
+      }
+
+      // 10) 经验 & 升级
+      if (playerXP >= xpToNext) {
+        playerXP -= xpToNext;
+        playerLevel++;
+        xpToNext = Math.floor(xpToNext * 1.5);
+        leveling = true;
+        showUpgradeDialog();
+      }
+    }
+
+    // -------------------------------------------------
+    // —— 渲染当前帧 —— 
+    // -------------------------------------------------
+    function renderGame() {
+      // 1) 背景
+      ctx.drawImage(images['background'], 0, 0, canvas.width, canvas.height);
+
+      // 2) 玩家
+      ctx.drawImage(images['player'], playerX, playerY, PLAYER_WIDTH, PLAYER_HEIGHT);
+      // 血条
+      const barW = PLAYER_WIDTH * playerHealth / playerMaxHealth;
+      ctx.fillStyle = '#333';
+      ctx.fillRect(playerX, playerY - 8, PLAYER_WIDTH, 5);
+      ctx.fillStyle = '#0f0';
+      ctx.fillRect(playerX, playerY - 8, barW, 5);
+      // 属性文字
+      ctx.fillStyle = '#fff';
+      ctx.font = '14px Arial';
+      ctx.fillText(`HP:${playerHealth.toFixed(0)}/${playerMaxHealth.toFixed(0)}`, 10, 20);
+      ctx.fillText(`ATK:${playerAttack.toFixed(0)} DEF:${playerDefense.toFixed(0)} SPD:${playerAttackSpeed.toFixed(1)}`, 10, 40);
+      ctx.fillText(`LV:${playerLevel} XP:${playerXP}/${xpToNext}`, 10, 60);
+
+      // Fireball 冷却显示
+      if (fireballSkillLevel > 0) {
+        let cdText;
+        if (leveling) {
+          const sec = pausedRemainingCd / 1000;
+          cdText = pausedRemainingCd <= 0
+            ? 'Fireball CD: READY'
+            : `Fireball CD: ${sec.toFixed(1)}s`;
+        } else {
+          const now = performance.now();
+          const fbCd = Math.max(10000, BASE_FIREBALL_COOLDOWN - fireballSkillLevel * 1000);
+          const since = now - lastFireballTime;
+          cdText = since >= fbCd
+            ? 'Fireball CD: READY'
+            : `Fireball CD: ${( (fbCd - since) / 1000 ).toFixed(1)}s`;
+        }
+        ctx.fillText(cdText, 10, 80);
+      }
+
+      // 3) 子弹
+      bullets.forEach(b => {
+        ctx.drawImage(images['laser'], b.x, b.y, 5, 10);
+      });
+      // 4) 火球
+      fireballs.forEach(f => {
+        ctx.drawImage(images['fireball'], f.x, f.y, 16, 16);
+      });
+      // 5) 敌人
+      enemies.forEach(e => {
+        ctx.drawImage(images['enemy'], e.rect.x, e.rect.y, e.rect.w, e.rect.h);
+        const ebw = e.rect.w * e.health / 50;
+        ctx.fillStyle = '#333';
+        ctx.fillRect(e.rect.x, e.rect.y - 6, e.rect.w, 5);
+        ctx.fillStyle = '#f00';
+        ctx.fillRect(e.rect.x, e.rect.y - 6, ebw, 5);
+      });
+      // 6) 敌人子弹
+      enemyBullets.forEach(eb => {
+        ctx.drawImage(images['laser'], eb.x, eb.y, 5, 10);
+      });
+      // 7) 伤害文字
+      ctx.fillStyle = '#fff';
+      ctx.font = '16px Arial';
+      damageTexts.forEach(dt => {
+        ctx.fillText(dt.text, dt.x, dt.y);
+      });
+    }
+
+    // -------------------------------------------------
+    // —— 播放音效 —— 
+    // -------------------------------------------------
+    function playSound(key) {
+      if (!sounds[key]) return;
+      const audio = sounds[key].cloneNode();
+      audio.play();
+    }
+
+    // -------------------------------------------------
+  // —— 启动游戏 —— 
+// 注册一个一次性的触摸/点击事件，让用户首次交互时再播放背景音乐
+let bgmStarted = false;
+function startBgmOnUserGesture() {
+  if (!bgmStarted && sounds['bgm']) {
+    sounds['bgm'].loop = true;
+    sounds['bgm'].play().catch(_=>{}); // 某些浏览器可能抛“用户未交互”异常，catch 掉
+    bgmStarted = true;
+  }
+  // 注册时加上 { once: true }，所以事件会自动移除，不用手动 remove
+}
+
+window.addEventListener('touchstart', startBgmOnUserGesture, { once: true });
+window.addEventListener('click',     startBgmOnUserGesture, { once: true });
+
+// 立即开始主循环
+requestAnimationFrame(gameLoop);
+
+  })();
+  </script>
+</body>
+</html>

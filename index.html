@@ -189,7 +189,7 @@
     // 经验 & 升级
     let playerLevel = 1;
     let playerXP    = 0;
-    let xpToNext    = 100;
+    let xpToNext    = 50;
     let leveling    = false;
     let pauseStartTime    = 0;
     let pausedRemainingCd = 0;
@@ -269,13 +269,13 @@
               playerHealth = Math.min(playerHealth + 40, playerMaxHealth);
               break;
             case 'Attack':
-              playerAttack += 0;   // 该项在手机版改为自动攻击，不需要手动加攻击量
+              playerAttack += 10;   // 该项在手机版改为自动攻击，不需要手动加攻击量
               break;
             case 'Attack Speed':
               playerAttackSpeed *= 1.2;
               break;
             case 'Defense':
-              playerDefense += 10; // 每次 +10
+              playerDefense += 5; // 每次 +10
               break;
             case 'MULTI_SHOT':
               multiShotLevel++;

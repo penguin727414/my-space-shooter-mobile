@@ -505,7 +505,7 @@
                     }
                   }
                   if (!c2) break;
-                  const rawC = playerAttack * deathChainLevel;
+                  const rawC = playerAttack*0.8* deathChainLevel;
                   const actC = rawC * (100 / (100 + c2.defense));
                   const dD = Math.floor(actC);
                   if (dD > 0) {
@@ -546,7 +546,7 @@
             exploded = true;
             const radius = 50 + 20 * fireballSkillLevel;
             const epicX = f.x + 8, epicY = f.y + 8;
-            const eRaw = playerAttack * 0.8 * fireballSkillLevel;
+            const eRaw = playerAttack *3* fireballSkillLevel;
             for (const a of Array.from(enemies)) {
               const dx = (a.rect.x + a.rect.w / 2) - epicX;
               const dy = (a.rect.y + a.rect.h / 2) - epicY;

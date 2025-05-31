@@ -445,7 +445,7 @@
             if (dmg > 0) {
               e.health -= dmg;
               damageTexts.push(new DamageText('-' + dmg, e.rect.x + e.rect.w / 2, e.rect.y));
-              const heal = Math.round(actual * 0.1);
+              const heal = Math.round(actual * 0);
               playerHealth = Math.min(playerHealth + heal, playerMaxHealth);
               if (heal > 0) {
                 damageTexts.push(new DamageText('+' + heal, playerX + PLAYER_WIDTH / 2, playerY));
